@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-app
+  namespace: genai
+  labels:
+    app: agentic-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentic-app
+  template:
+    metadata:
+      labels:
+        app: agentic-app
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+      - name: agentic-app
+        image: public.ecr.aws/p7b6k2h9/fmamazon/genai-eks:python-3.11-slim
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - NET_RAW
+          seccompProfile:
+            type: RuntimeDefault
+        command: ["/bin/sh", "-c"]
+        args:
+        - >
+          mkdir -p /app &&
+          pip install fastapi langchain langgraph langfuse langchain-openai langchain-mcp-adapters fastapi uvicorn &&
+          cp /config/langgraph-agent-react-agent.py /app/ &&
+          cd /app &&
+          python langgraph-agent-react-agent.py
+        env:
+        - name: LANGFUSE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-langfuse-secrets
+              key: secret-key
+        - name: LANGFUSE_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-langfuse-secrets
+              key: public-key
+        - name: LANGFUSE_HOST
+          value: http://langfuse-web:3000
+        - name: QWEN_TEXT_MODEL_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-model-keys
+              key: qwen-text-key
+        - name: QWEN_VISION_MODEL_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-model-keys
+              key: qwen-vision-key
+        - name: LLM_MODEL
+          value: "qwen3-vllm"  # Can be changed to "vllm-server-qwen-vision" for vision capabilities
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: agentic-app-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentic-app
+  namespace: genai
+spec:
+  selector:
+    app: agentic-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

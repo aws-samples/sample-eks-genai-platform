@@ -1,0 +1,251 @@
+# Langfuse Helm Chart Values for samples-genai-eks
+# Migrated from static manifests to Helm chart deployment
+
+# Global configuration
+global:
+  security:
+    allowInsecureImages: true
+  defaultStorageClass: "gp3"
+
+# Langfuse application configuration
+langfuse:
+  # Security configuration
+  encryptionKey:
+    secretKeyRef:
+      name: "langfuse-secrets"
+      key: "encryption-key"
+  
+  salt:
+    secretKeyRef:
+      name: "langfuse-secrets"
+      key: "salt"
+  
+  nextauth:
+    secret:
+      secretKeyRef:
+        name: "langfuse-secrets"
+        key: "nextauth-secret"
+
+  # Application settings
+  telemetry:
+    enabled: true
+  
+  signUp:
+    disabled: false
+  
+  experimental:
+    enabled: false
+
+  # Web service configuration
+  web:
+    replicaCount: 2
+    image:
+      repository: public.ecr.aws/p7b6k2h9/fmamazon/genai-eks
+      tag: "langfuse-3"
+      pullPolicy: Always
+    resources: {}
+    
+  # Worker service configuration  
+  worker:
+    replicaCount: 1
+    image:
+      repository: public.ecr.aws/p7b6k2h9/fmamazon/genai-eks
+      tag: "langfuse-worker-3"
+      pullPolicy: Always
+    resources: {}
+
+# PostgreSQL configuration
+postgresql:
+  auth:
+    username: postgres
+    existingSecret: "postgresql-secrets"
+    secretKeys:
+      adminPasswordKey: "db-pass"
+    database: "postgres_langfuse"
+  
+  image:
+    registry: public.ecr.aws
+    repository: p7b6k2h9/fmamazon/genai-eks
+    tag: "postgresql-17.2.0-debian-12-r8"
+  
+  primary:
+    persistence:
+      enabled: true
+      size: "8Gi"
+      storageClass: "gp3"
+    resources:
+      limits:
+        cpu: 1
+        memory: 192Mi
+        ephemeral-storage: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 50Mi
+
+# ClickHouse configuration
+clickhouse:
+  auth:
+    existingSecret: "clickhouse-secrets"
+    existingSecretKey: "clickhouse-pass"
+  
+  image:
+    registry: public.ecr.aws
+    repository: p7b6k2h9/fmamazon/genai-eks
+    tag: "clickhouse-24.12.3-debian-12-r1"
+  
+  shards: 1
+  replicaCount: 3
+  
+  persistence:
+    enabled: true
+    size: "8Gi"
+    storageClass: "gp3"
+    
+  resources:
+    limits:
+      cpu: "6"
+      memory: 12Gi
+      ephemeral-storage: 2Gi
+    requests:
+      cpu: "1"
+      memory: 3Gi
+      ephemeral-storage: 50Mi
+
+  zookeeper:
+    enabled: true
+    replicaCount: 3
+    image:
+      registry: public.ecr.aws
+      repository: p7b6k2h9/fmamazon/genai-eks
+      tag: "zookeeper-3.9.3-debian-12-r3"
+    persistence:
+      enabled: true
+      size: "8Gi"
+      storageClass: "gp3"
+    resources:
+      limits:
+        cpu: 1
+        memory: 384Mi
+        ephemeral-storage: 2Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+        ephemeral-storage: 50Mi
+
+# Redis/Valkey configuration - Using official Langfuse Helm chart structure
+redis:
+  auth:
+    existingSecret: "redis-secrets"
+    existingSecretPasswordKey: "redis-pass"
+  
+  image:
+    registry: public.ecr.aws
+    repository: p7b6k2h9/fmamazon/genai-eks
+    tag: "valkey-8.0.2-debian-12-r0"
+  
+  primary:
+    persistence:
+      enabled: true
+      size: "8Gi"
+      storageClass: "gp3"
+    resources:
+      limits:
+        cpu: 1
+        memory: 192Mi
+        ephemeral-storage: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 50Mi
+
+# MinIO configuration
+minio:
+  auth:
+    existingSecret: "minio-secrets"
+    rootUser: "minio"
+  
+  image:
+    registry: public.ecr.aws
+    repository: p7b6k2h9/fmamazon/genai-eks
+    tag: "minio-2024.12.18-debian-12-r1"
+  
+  persistence:
+    enabled: true
+    size: "8Gi"
+    storageClass: "gp3"
+    
+  resources:
+    limits:
+      cpu: 1
+      memory: 384Mi
+      ephemeral-storage: 2Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+      ephemeral-storage: 50Mi
+
+  defaultBuckets: "langfuse"
+
+# S3/MinIO Configuration for Langfuse
+s3:
+  deploy: true
+  bucket: "langfuse"
+  region: "auto"
+  endpoint: "http://langfuse-s3:9000"
+  forcePathStyle: true
+  accessKeyId:
+    value: "minio"
+  secretAccessKey:
+    secretKeyRef:
+      name: "minio-secrets"
+      key: "secret-key"
+
+  # Event Upload Configuration
+  eventUpload:
+    enabled: true
+    bucket: "langfuse"
+    region: "auto"
+    endpoint: "http://langfuse-s3:9000"
+    forcePathStyle: true
+    accessKeyId:
+      value: "minio"
+    secretAccessKey:
+      secretKeyRef:
+        name: "minio-secrets"
+        key: "secret-key"
+
+  # Batch Export Configuration
+  batchExport:
+    enabled: true
+    bucket: "langfuse"
+    region: "auto"
+    endpoint: "http://langfuse-s3:9000"
+    forcePathStyle: true
+    accessKeyId:
+      value: "minio"
+    secretAccessKey:
+      secretKeyRef:
+        name: "minio-secrets"
+        key: "secret-key"
+
+  # Media Upload Configuration
+  mediaUpload:
+    enabled: true
+    bucket: "langfuse"
+    region: "auto"
+    endpoint: "http://langfuse-s3:9000"
+    forcePathStyle: true
+    accessKeyId:
+      value: "minio"
+    secretAccessKey:
+      secretKeyRef:
+        name: "minio-secrets"
+        key: "secret-key"
+    maxContentLength: 1000000000
+    downloadUrlExpirySeconds: 3600
+
+  # S3 Auth configuration for MinIO
+  auth:
+    existingSecret: "minio-secrets"
+    rootUser: "minio"

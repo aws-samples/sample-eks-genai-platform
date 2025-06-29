@@ -1,0 +1,440 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-guardrail-config
+  namespace: genai
+data:
+  custom_guardrail.py: |
+    from typing import Any, Dict, List, Literal, Optional, Union
+
+    import litellm
+    from litellm._logging import verbose_proxy_logger
+    from litellm.caching.caching import DualCache
+    from litellm.integrations.custom_guardrail import CustomGuardrail
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.guardrails.guardrail_helpers import should_proceed_based_on_metadata
+    from litellm.types.guardrails import GuardrailEventHooks
+    import json
+
+    import re,logging
+
+    # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    class myCustomGuardrail(CustomGuardrail):
+        def __init__(
+            self,
+            **kwargs,
+        ):
+            # store kwargs as optional_params
+            self.optional_params = kwargs
+
+            super().__init__(**kwargs)
+
+        async def async_post_call_success_hook(
+                self,
+                data: dict,
+                user_api_key_dict: UserAPIKeyAuth,
+                response,
+            ):
+                """
+                Runs on response from LLM API call
+
+                It can be used to reject a response
+
+                If a response contains invalid JSON -> we will raise an exception
+                """
+                if isinstance(response, litellm.ModelResponse):
+                    for choice in response.choices:
+                        if isinstance(choice, litellm.Choices):
+                            if isinstance(choice.message.content, str):
+                                detected_pii = self.detect_pii(choice.message.content)
+                                logger.log(logging.CRITICAL, msg=f"detect_pii: {detected_pii}")
+                                if detected_pii:
+                                    raise ValueError(f"Guardrail failed PII Detected: {detected_pii}")
+                                                          
+                                # try:
+                                #     json_content = json.loads(choice.message.content)
+                                # except json.JSONDecodeError as e:
+                                #     raise ValueError(f"Invalid JSON in response content: {e}")
+                                
+        def detect_pii(self, content: str) -> List[str]:
+            """
+            Detects PII data in the given content.
+            
+            Args:
+                content (str): The content to check for PII data.
+            
+            Returns:
+                List[str]: A list of detected PII data.
+            """
+            pii_patterns = {
+                "email": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+                "phone": r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",
+                "ssn": r"\b\d{3}-\d{2}-\d{4}\b"
+            }
+            
+            detected_pii = []
+            
+            for pii_type, pattern in pii_patterns.items():
+                matches = re.findall(pattern, content)
+                if matches:
+                    return True
+                    # detected_pii.extend(matches)
+            
+            return False     
+
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: genai
+data:
+  config.yaml: |
+    model_list:
+    - model_name: vllm-server-qwen-vision
+      litellm_params:
+        model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
+        api_base: http://vllm-server-qwen-vision:8000/v1
+        api_key: ""
+        temperature: 0.1
+        stream: false
+      model_info:
+        supports_function_calling: true
+    - model_name: qwen3-vllm
+      litellm_params:
+        model: hosted_vllm/Qwen/Qwen3-14B
+        api_base: http://vllm-qwen-server:8000/v1
+        api_key: ""
+        num_retries: 3 # retry call 3 times on each model_name (e.g. zephyr-beta)
+        temperature: 0.5
+        stream: false
+      model_info:
+        supports_function_calling: true
+
+    # guardrails:
+    #   - guardrail_name: "custom-post-guard"
+    #     litellm_params:
+    #       guardrail: custom_guardrail.myCustomGuardrail
+    #       mode: "post_call" 
+    #       default_on: true
+
+    litellm_settings:
+
+      cache: true
+      cache_params:
+        type: redis
+        host: redis
+        port: 6379
+        password: file:/etc/litellm-secrets/redis-password
+        ttl: 10
+      drop_params: false
+      forward_to_langfuse: true
+      success_callback: ["langfuse"]
+      failure_callback: ["langfuse"]
+      langfuse_public_key: file:/etc/langfuse-secrets/public-key
+      langfuse_secret: file:/etc/langfuse-secrets/secret-key
+      langfuse_host: os.environ/LANGFUSE_HOST
+
+      default_team_settings: 
+        - team_id: team-1
+          success_callback: ["langfuse"]
+          failure_callback: ["langfuse"]
+          langfuse_public_key: file:/etc/langfuse-secrets/public-key
+          langfuse_secret: file:/etc/langfuse-secrets/secret-key
+          langfuse_host: os.environ/LANGFUSE_HOST
+      # langfuse_base_url: http://langfuse-web:3000
+      # langfuse_api_key: ""
+    # https://docs.litellm.ai/docs/proxy/configs  
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: genai
+  labels:
+    app: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+      - name: litellm
+        image:  public.ecr.aws/p7b6k2h9/fmamazon/genai-eks:litellm-main-latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 4000
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - NET_RAW
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          limits:
+            cpu: 2
+            memory: 2Gi
+            ephemeral-storage: 1Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+            ephemeral-storage: 100Mi
+        livenessProbe:
+          httpGet:
+            path: /health/liveliness
+            port: 4000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          successThreshold: 1
+          failureThreshold: 3
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 4000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          successThreshold: 1
+          failureThreshold: 3
+          timeoutSeconds: 10        
+        args: [ "--config", "/app/config.yaml"]  
+        # args: [ "--config", "/app/config.yaml", "--detailed_debug"]  
+        env:
+        - name: LANGFUSE_HOST
+          value: http://langfuse-web:3000
+        - name: REDIS_HOST
+          value: redis
+        - name: REDIS_PORT
+          value: "6379"
+        - name: STORE_MODEL_IN_DB
+          value: "true"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: database-url
+        - name: LITELLM_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: master-key
+        - name: LITELLM_SALT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: salt-key
+        volumeMounts:
+        - name: config-volume
+          readOnly: true
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        - name: guardrail-volume
+          mountPath: /app/custom_guardrail.py
+          subPath: custom_guardrail.py
+        - name: litellm-secrets-volume
+          mountPath: /etc/litellm-secrets
+          readOnly: true
+        - name: langfuse-secrets-volume
+          mountPath: /etc/langfuse-secrets
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: litellm-config
+      - name: guardrail-volume
+        configMap:
+          name: custom-guardrail-config
+      - name: litellm-secrets-volume
+        secret:
+          secretName: litellm-secrets
+      - name: langfuse-secrets-volume
+        secret:
+          secretName: litellm-langfuse-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: genai
+spec:
+  selector:
+    app: litellm
+  ports:
+    - protocol: TCP
+      port: 4000
+      targetPort: 4000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: genai
+spec:
+  serviceName: "postgres"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+      - name: postgres
+        image: postgres@sha256:8f6fbd24a12304d2adc332a2162ee9ff9d6044045a0b07f94d6e53e73125e11c
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5432
+          name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - NET_RAW
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          limits:
+            cpu: 1
+            memory: 1Gi
+            ephemeral-storage: 1Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+            ephemeral-storage: 100Mi
+        env:
+        - name: POSTGRES_DB
+          value: "mydatabase"
+        - name: POSTGRES_USER
+          value: "myuser"
+        - name: POSTGRES_PASSWORD_FILE
+          value: "/etc/postgresql-secrets/postgres-password"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres
+        - name: postgres-secrets
+          mountPath: /etc/postgresql-secrets
+          readOnly: true
+      volumes:
+      - name: postgres-secrets
+        secret:
+          secretName: litellm-secrets
+          items:
+          - key: postgres-password
+            path: postgres-password
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: genai
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  clusterIP: None
+  selector:
+    app: postgres  
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: genai
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+      - name: redis
+        image: redis@sha256:f923bcecfa76b1fa52cf24265196f07497db6b96f37a151852d8fe782c437026
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 6379
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - NET_RAW
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          limits:
+            cpu: 1
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+            ephemeral-storage: 100Mi
+        command: ["/bin/sh"]
+        args: ["-c", "redis-server --requirepass $(cat /etc/redis-secrets/redis-password)"]
+        volumeMounts:
+        - name: redis-secrets-volume
+          mountPath: /etc/redis-secrets
+          readOnly: true
+      volumes:
+      - name: redis-secrets-volume
+        secret:
+          secretName: litellm-secrets
+          items:
+          - key: redis-password
+            path: redis-password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: genai
+spec:
+  selector:
+    app: redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP
